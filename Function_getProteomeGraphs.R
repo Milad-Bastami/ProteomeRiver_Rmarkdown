@@ -563,12 +563,15 @@ getProteomeGraphs <- function(
       gene_names <- anno_tbl |>
         pull(gene_name)
       rownames(r_obj@.Data[[1]]) <- gene_names
+        ## fix html filename issue (remove '=')
+        html_filename <- 
+        strsplit(colnames(r_obj$coefficients)[coef], split = '=', fixed = T)[[1]][1] |>
+        paste0('.html')
       htmlwidgets::saveWidget(widget = glimmaVolcano(r_obj, 
                                                      coef = coef, 
                                                      anno = anno_tbl, 
                                                      display.columns = display_columns), 
-                              file = file.path(output_dir, 
-                                               paste0(colnames(r_obj$coefficients)[coef], ".html")),  
+                              file = file.path(output_dir,  html_filename),  
                               selfcontained = TRUE)
     }
   }
