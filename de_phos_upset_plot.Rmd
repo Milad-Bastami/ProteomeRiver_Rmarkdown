@@ -1,0 +1,189 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+
+
+#Test if BioManager is installed 
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+
+# load pacman package manager
+if(!require(pacman)){
+    install.packages("pacman")
+    library(pacman)
+}
+
+p_load(tidyverse)
+p_load(plotly)
+p_load(vroom)
+p_load(ggplot2)
+p_load(gridExtra)
+p_load(magrittr)
+p_load(rlang)
+p_load(readxl)
+p_load(UniProt.ws)
+p_load(ggrepel)
+p_load(RColorBrewer)
+p_load(GGally)
+p_load(ProteomeRiver)
+p_load(UpSetR)
+
+```
+
+```{r}
+base_dir <-  here::here() 
+data_dir <- file.path( base_dir, "Data")
+results_dir <- file.path(base_dir, "Results")
+source_dir <- file.path(base_dir, "Source")
+
+createDirIfNotExists(file.path(results_dir, "Threshold_1_2", "Venn_Diagram"))
+
+sig_threshold <- 0.05
+
+```
+
+```{r}
+
+de_prot_tbl <- vroom::vroom( file.path(results_dir, "Threshold_1_2", "annot_proteins", "de_proteins_long_annot.tsv")) %>% 
+  dplyr::mutate( uniprot_acc_first = str_split( uniprot_acc, ":") %>% purrr::map_chr(1)) %>%
+  mutate( comparison = factor ( comparison, levels=c( "t0min",				
+                                                      "t10min",
+                                                      "t40min"		))) %>%
+  arrange(  comparison)
+
+de_prot_tbl %>%
+  distinct(comparison)
+
+```
+
+```{r}
+trim_de_prot_tbl <- de_prot_tbl %>%
+  dplyr::select( uniprot_acc_first, q.mod, log2FC, comparison) %>%
+  dplyr::mutate( is_sig = ifelse(q.mod < sig_threshold & log2FC > 0, 1, 0 ))
+
+```
+
+```{r}
+de_prot_wide_tbl <- trim_de_prot_tbl %>%
+  dplyr::rename(q_mod = "q.mod") %>%
+  pivot_wider( id_cols=uniprot_acc_first, 
+               names_from = comparison,
+               values_from = c(q_mod, log2FC, is_sig),
+               names_sep = ".",
+               names_sort = FALSE) %>%
+  dplyr::filter( ! if_all(.cols=contains("is_sig"), .fns=\(x){x == 0})) 
+
+
+de_prot_wide_tbl %>%
+  group_by( across(.cols=contains("is_sig")) ) %>%
+  count() %>%
+  ungroup()
+
+
+
+de_prot_wide_annot <-  de_prot_wide_tbl %>%
+  dplyr::left_join( de_prot_tbl %>%
+                      dplyr::select(
+                        -q.mod, 
+                        -p.mod,
+                        -log2FC, 
+                        -comparison,
+                        -matches("left|right"),
+                      ) %>%
+                      distinct,
+                    by="uniprot_acc_first")  %>%
+  dplyr::select( -matches("fraction|intensity")) %>%
+  dplyr::select( 
+    -c("majority_protein_ids",
+       "peptide_counts_all", "peptide_counts_razor_unique","peptide_counts_unique","protein_names","gene_names_maxquant" ,
+       "fasta_headers","number_of_proteins", "peptides", "razor_unique_peptides","unique_peptides", 
+       "sequence_coverage_percent","unique_razor_sequence_coverage_percent", "unique_sequence_coverage_percent", "mol_weight_k_da","sequence_length" ,
+       "sequence_lengths", "q_value","score","ms_ms_count","only_identified_by_site" ,
+       "reverse","potential_contaminant","peptide_ids","peptide_is_razor", "mod_peptide_ids", 
+       "evidence_ids", "ms_ms_ids","best_ms_ms", "deamidation_nq_site_ids" , "oxidation_m_site_ids",
+       "deamidation_nq_site_positions","oxidation_m_site_positions") ) %>%
+  relocate( UNIPROT_GENENAME, .before="uniprot_acc_first")
+
+vroom::vroom_write( de_prot_wide_annot, 
+                    file.path( results_dir, 
+                               "Threshold_1_2",
+                               "Venn_Diagram",
+                               "de_protein_list_summary.tab"))
+
+
+
+list_of_long_columns <- intersect(colnames(de_prot_wide_annot), c( "uniprot_acc",
+                                                                         "protein_ids",
+                                                                         "protein_names",
+                                                                         "ENSEMBL",
+                                                                         "PROTEIN-NAMES",
+                                                                         "KEYWORDS",
+                                                                         "GO-ID",
+                                                                         "go_biological_process",
+                                                                         "go_cellular_compartment",
+                                                                         "go_molecular_function",
+                                                                         "reactome_term",
+                                                                         "majority_protein_ids",
+                                                                         "fasta_headers",
+                                                                         "evidence_ids",
+                                                                         "ms_ms_ids") )
+
+writexl::write_xlsx( de_prot_wide_annot %>%
+                      mutate_at( list_of_long_columns, ~substr(., 1, 32760) ), 
+                    file.path( results_dir, 
+                               "Threshold_1_2",
+                               "Venn_Diagram",
+                               "de_protein_list_summary.xlsx"))
+
+```
+
+
+
+
+## upset plot
+```{r}
+
+upset_plot <- de_prot_wide_tbl %>%
+  dplyr::select( uniprot_acc_first, contains("is_sig")  )  %>% 
+  dplyr::filter( ! if_all(contains("is_sig"), \(x){ x== 0 } ) )  %>%
+  column_to_rownames("uniprot_acc_first") %>%
+  upset()
+
+upset_plot
+
+pdf( file.path( results_dir, 
+                               "Threshold_1_2",
+                               "Venn_Diagram",
+                               "upset_plot.pdf"))
+upset_plot
+dev.off()
+
+
+png( file.path( results_dir, 
+                               "Threshold_1_2",
+                               "Venn_Diagram",
+                               "upset_plot.png"))
+upset_plot
+dev.off()
+
+```
+
+## Protein list for use in functional enrichment analysis
+```{r}
+
+custom_de_protein_query_set <- de_prot_wide_annot %>%
+  unite(col=is_sig_string, contains("is_sig")) %>%
+  dplyr::distinct(uniprot_acc_first, is_sig_string) 
+
+
+vroom::vroom_write( custom_de_protein_query_set, 
+                    file.path( results_dir, 
+                               "Threshold_1_2",
+                               "Venn_Diagram",
+                               "custom_de_protein_query_set.tab"))
+
+```

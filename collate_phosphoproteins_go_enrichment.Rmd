@@ -1,0 +1,239 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+
+
+#Test if BioManager is installed
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+  BiocManager::install()
+}
+
+# load pacman package manager
+if (!require(pacman)) {
+  install.packages("pacman")
+  library(pacman)
+}
+
+p_load(tidyverse)
+p_load(plotly)
+p_load(vroom)
+p_load(writexl)
+p_load(ggplot2)
+p_load(rlang)
+
+p_load(magrittr)
+p_load(xml2)
+p_load(rvest)
+p_load(ProteomeRiver)
+p_load(httr)
+p_load(stringi)
+p_load(rvest)
+
+```
+
+
+```{r}
+base_dir <-  "/home/ubuntu/20240405_RussellDale_Epileptic_BMP_55"
+data_dir <- file.path( base_dir, "data")
+results_dir <- file.path(base_dir, "results", "phosphoproteomics")
+source_dir <- file.path(base_dir, "source", "phosphoproteomics")
+
+# data_dir <- '../data'
+# results_dir <- '../results/phosphoproteomics'
+```
+
+
+
+```{r}
+selected_min_set_size <- 5
+selected_max_set_size <- 250
+is_run_revigo <- TRUE
+species_taxon <- 9606
+input_go_type <- NA
+revigo_cutoff <- 0.9
+analysis_type_file_name <- "go_enrichment"
+est_num_clusters <- 6
+input_plot_width = 10
+input_plot_height = 25
+
+cmp_expts_dir <- file.path(results_dir, "Phosphoproteins_Comparisons", "GO_Filtered")
+createDirIfNotExists(cmp_expts_dir)
+
+
+results_path_glob <- file.path(results_dir, "phosphoproteins_go/*/go_enrichment_table_*.tab")
+```
+
+
+```{r}
+list_of_files <- Sys.glob( results_path_glob ) 
+table_of_files <- data.frame(file_name=list_of_files)
+added_columns <- setdiff(colnames(table_of_files), "file_name")
+
+```
+
+```{r}
+enriched_results_tbl <- readEnrichmentResultFiles( table_of_files, go_type=input_go_type) %>%
+    dplyr::mutate( comparison = str_replace_all(comparison, "minus", "vs" )) %>%
+    dplyr::filter( Count >= 3)
+```
+
+## Run Revigo
+```{r}
+enrich_revigo <- filterResultsWithRevigo( enriched_results_tbl,  
+                                          added_columns, 
+                                          is_run_revigo=is_run_revigo,
+                                          revigo_cutoff=revigo_cutoff) 
+```
+
+```{r}
+
+evaluateBestMinMaxGeneSetSize(enrich_revigo, added_columns)
+
+```
+
+
+```{r}
+
+saveFilteredFunctionalEnrichmentTable( enrich_revigo, 
+                                       set_size_min= selected_min_set_size, 
+                                       set_size_max=selected_max_set_size, 
+                                       results_dir=cmp_expts_dir, 
+                                       file_name=analysis_type_file_name  )
+
+```
+
+```{r}
+list_of_columns <- c( "Pt_vs_Ct"
+ )
+```
+
+
+## Comparisons of samples 
+```{r}
+enrich_revigo |>
+  distinct( gene_set )
+
+if (  enrich_revigo %>%
+      dplyr::filter( gene_set %in% c("all_significant")  &
+                     min_set_size == selected_min_set_size &
+                     max_set_size == selected_max_set_size ) %>% 
+      nrow() > 0) {
+
+list_of_heatmaps <- drawListOfFunctionalEnrichmentHeatmaps( enrich_revigo  %>%
+                                                              dplyr::filter( gene_set %in% c("all_significant")), 
+                                                            added_columns,
+                                                            set_size_min= selected_min_set_size, 
+                                                            set_size_max=selected_max_set_size, 
+                                                            x_axis = Analysis_Type , 
+                                                            analysis_column = Analysis_Type,
+                                                            facet_by_column = "gene_set",
+                                                            remove_duplicted_entries = "merge",
+                                                            xaxis_levels = list_of_columns) 
+
+
+
+
+
+saveListOfFunctionalEnrichmentHeatmaps( list_of_heatmaps,
+                                        results_dir = cmp_expts_dir,
+                                        file_name = analysis_type_file_name,
+                                        plot_width = input_plot_width,
+                                        plot_height = input_plot_height)
+}
+
+```
+
+```{r}
+if (  enrich_revigo %>%
+      dplyr::filter( gene_set %in% c("negative_plus_overlap", "positive_plus_overlap")  &
+                     min_set_size == selected_min_set_size &
+                     max_set_size == selected_max_set_size ) %>% 
+      nrow() > 0) {
+list_of_heatmaps <- drawListOfFunctionalEnrichmentHeatmaps( enrich_revigo %>%
+                                                              dplyr::filter( gene_set %in% c("negative_plus_overlap", "positive_plus_overlap")), 
+                                                            added_columns,
+                                                            set_size_min= selected_min_set_size, 
+                                                            set_size_max=selected_max_set_size, 
+                                                            x_axis = Analysis_Type , 
+                                                            analysis_column = Analysis_Type,
+                                                            facet_by_column = "gene_set",
+                                                            remove_duplicted_entries = "merge",
+                                                            xaxis_levels = list_of_columns) 
+
+
+
+
+
+saveListOfFunctionalEnrichmentHeatmaps( list_of_heatmaps,
+                                        results_dir = cmp_expts_dir,
+                                        file_name = paste( analysis_type_file_name, "incl_plus_overlap",sep="_"),
+                                        plot_width = input_plot_width,
+                                        plot_height = input_plot_height/2)
+}
+```
+
+
+
+```{r}
+if (  enrich_revigo %>%
+      dplyr::filter( gene_set %in% c("negative_only", "positive_only", "overlap_only")  &
+                     min_set_size == selected_min_set_size &
+                     max_set_size == selected_max_set_size ) %>% 
+      nrow() > 0) {
+list_of_heatmaps <- drawListOfFunctionalEnrichmentHeatmaps( enrich_revigo %>%
+                                                              dplyr::filter( gene_set %in% c("negative_only", "positive_only", "overlap_only")), 
+                                                            added_columns,
+                                                            set_size_min= selected_min_set_size, 
+                                                            set_size_max=selected_max_set_size, 
+                                                            x_axis = Analysis_Type , 
+                                                            analysis_column = Analysis_Type,
+                                                            facet_by_column = "gene_set",
+                                                            remove_duplicted_entries = "merge",
+                                                            xaxis_levels = list_of_columns) 
+
+
+saveListOfFunctionalEnrichmentHeatmaps( list_of_heatmaps,
+                                        results_dir = cmp_expts_dir,
+                                        file_name = paste( analysis_type_file_name, "disjoint_sets",sep="_"),
+                                        plot_width = input_plot_width,
+                                        plot_height = input_plot_height/2)
+
+}
+
+```
+
+```{r}
+
+
+if (  enrich_revigo %>%
+      dplyr::filter( gene_set %in% c("negative_sum_sig_phosphosites", 
+                                     "positive_sum_sig_phosphosites")  &
+                     min_set_size == selected_min_set_size &
+                     max_set_size == selected_max_set_size ) %>% 
+      nrow() > 0) {
+
+list_of_heatmaps <- drawListOfFunctionalEnrichmentHeatmaps( enrich_revigo %>%
+                                                              dplyr::filter( gene_set %in% c("negative_sum_sig_phosphosites", "positive_sum_sig_phosphosites")), 
+                                                             added_columns,
+                                                            set_size_min= selected_min_set_size, 
+                                                            set_size_max=selected_max_set_size, 
+                                                            x_axis = Analysis_Type , 
+                                                            analysis_column = Analysis_Type,
+                                                            facet_by_column = "gene_set",
+                                                            remove_duplicted_entries = "merge",
+                                                            xaxis_levels = list_of_columns) 
+
+saveListOfFunctionalEnrichmentHeatmaps( list_of_heatmaps,
+                                        results_dir = cmp_expts_dir,
+                                        file_name = paste( analysis_type_file_name, "sum_lfc",sep="_"),
+                                        plot_width = input_plot_width,
+                                        plot_height = input_plot_height/2)
+}
+
+```

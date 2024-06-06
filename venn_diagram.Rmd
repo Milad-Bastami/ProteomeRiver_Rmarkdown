@@ -1,0 +1,45 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+
+
+#Test if BioManager is installed 
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+
+# load pacman package manager
+if(!require(pacman)){
+    install.packages("pacman")
+    library(pacman)
+}
+
+p_load(tidyverse)
+p_load(plotly)
+p_load(vroom)
+p_load(ggplot2)
+p_load(gridExtra)
+p_load(magrittr)
+p_load(rlang)
+p_load(readxl)
+p_load(UniProt.ws)
+p_load(ggrepel)
+p_load(RColorBrewer)
+p_load(GGally)
+p_load(ProteomeRiver)
+p_load(UpSetR)
+
+p_load(readxl)
+
+```
+
+
+
+```{r}
+
+```
+

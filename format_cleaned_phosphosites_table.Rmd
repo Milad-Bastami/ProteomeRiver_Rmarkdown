@@ -1,0 +1,545 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+```{r}
+
+
+#Test if BioManager is installed
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+  BiocManager::install()
+}
+
+# load pacman package manager
+if (!require(pacman)) {
+  install.packages("pacman")
+  library(pacman)
+}
+
+p_load(tidyverse)
+p_load(plotly)
+p_load(vroom)
+p_load(writexl)
+p_load(ggplot2)
+p_load(rlang)
+
+p_load(magrittr)
+p_load(ProteomeRiver)
+p_load(UpSetR)
+
+```
+
+```{r}
+base_dir <-  here::here() 
+data_dir <- file.path( base_dir, "data")
+results_dir <- file.path(base_dir, "results")
+source_dir <- file.path(base_dir, "scripts")
+
+```
+
+
+```{r}
+data <- vroom::vroom( file.path( results_dir, "phosphoproteomics", "norm_phos_by_prot_abundance/norm_phosphosite_lfc_minus_protein_lfc_annotated.tsv") )
+```
+
+
+```{r}
+annotation_data <- data %>%
+  dplyr::mutate( position = str_split(position, ":" ) %>% purrr::map_chr(1) ) %>%
+  dplyr::mutate( sequence = str_split(sequence, ":" ) %>% purrr::map_chr(1) ) %>%
+  dplyr::mutate( residue = str_sub(sequence, 8, 8)) %>% 
+  dplyr::mutate( num_sites = str_split( position, "") %>% purrr::map_int(length ) )  %>%
+  dplyr::mutate( `First gene name` = str_split( gene_name, " ") %>% purrr::map_chr(1)) %>%
+  dplyr::mutate(`First Gene|Site(s)` = paste(`First gene name`, paste0(residue, position), sep="|")) %>%
+  dplyr::select( sites_id, 
+                 uniprot_acc,
+                 position,
+                 residue,
+                 sequence, 
+                 num_sites,
+                 status, 
+                 `First gene name`, 
+                 UNIPROT_GENENAME,
+                 `PROTEIN-NAMES`,
+                 LENGTH,
+                 `First Gene|Site(s)`) %>%
+  distinct() %>%
+  arrange(sites_id)
+
+pivoted_data <- data %>%
+    dplyr::mutate( comparison_abbrev = comparison ) |>
+  dplyr::mutate( comparison_abbrev = factor( comparison_abbrev, levels = c( "CT00_vs_KN00"
+                                                                            ,"CT05_vs_KN05"
+                                                                            ,"CT15_vs_KN15"
+                                                                            ,"CT30_vs_KN30"
+                                                                            ,"CT05_vs_CT00"
+                                                                            ,"CT15_vs_CT00"
+                                                                            ,"CT30_vs_CT00"
+                                                                            ,"KN05_vs_KN00"
+                                                                            ,"KN15_vs_KN00"
+                                                                            ,"KN30_vs_KN00"   ))) %>%
+    arrange( comparison_abbrev) %>%
+    mutate( is_norm_phos_sig = case_when( combined_q_mod < 0.05 ~ 1
+                                          , TRUE ~ 0 )) |>
+    pivot_wider( id_cols = c(sites_id, uniprot_acc), 
+                 values_from=c( norm_phos_logFC, combined_q_mod, is_norm_phos_sig, log2FC.phos, q.mod.phos, log2FC.prot, q.mod.prot),
+                 names_from = comparison_abbrev,
+                 names_sep = ".")  %>%
+    rename_with(.cols = matches("norm_phos_logFC"),
+                .fn = ~str_replace( ., "norm_phos_logFC\\.(.*)", "\\1.norm_phos_logFC")) %>%
+    rename_with(.cols = matches("combined_q_mod"),
+                .fn = ~str_replace( ., "combined_q_mod\\.(.*)", "\\1.combined_q_mod")) %>%
+      rename_with(.cols = matches("is_norm_phos_sig"),
+                .fn = ~str_replace( ., "is_norm_phos_sig\\.(.*)", "\\1.is_norm_phos_sig")) %>%
+    rename_with(.cols = matches("log2FC.phos"),
+                .fn = ~str_replace( ., "log2FC.phos\\.(.*)", "\\1.log2FC.phos")) %>%
+    rename_with(.cols = matches("q.mod.phos"),
+                .fn = ~str_replace( ., "q.mod.phos\\.(.*)", "\\1.q_mod.phos")) %>%
+    rename_with(.cols = matches("log2FC.prot"),
+                .fn = ~str_replace( ., "log2FC.prot\\.(.*)", "\\1.log2FC.prot"))%>%
+    rename_with(.cols = matches("q.mod.prot"),
+                .fn = ~str_replace( ., "q.mod.prot\\.(.*)", "\\1.q_mod.prot"))
+    
+
+
+```
+
+```{r}
+ combined_data <- annotation_data %>%
+  left_join( pivoted_data, by = c("sites_id", "uniprot_acc"))
+```
+
+
+```{r}
+
+
+repeated_data <- combined_data %>%
+  ungroup() %>%
+  group_by( sites_id) %>%
+  mutate( counts = n()) %>%
+  ungroup() %>%
+  arrange(sites_id)  %>%
+  dplyr::select( sites_id, counts) %>%
+  dplyr::rename( `Repeated data` = "counts") %>%
+  distinct()
+```
+
+```{r}
+repeated_data %>%
+  dplyr::filter( `Repeated data` > 1)
+```
+
+## uniprot data file
+```{r}
+uniprot_tbl <- vroom::vroom( file.path(data_dir, "UniProt", "data.tab")) |>
+  dplyr::rename( uniprot_acc = "Entry")
+
+
+```
+
+
+```{r}
+output_data <- combined_data %>%
+  left_join( repeated_data, by =c( "sites_id" )) %>%
+  relocate( `Repeated data`, .after="LENGTH") %>%
+  dplyr::mutate( uniprot_acc = str_split(uniprot_acc, ":" ) %>% purrr::map_chr(1) ) %>%
+  dplyr::mutate( uniprot_list = str_split( sites_id, "!") %>% purrr::map_chr(1) %>% str_split( ":")) %>%
+  relocate(uniprot_list, .after="sites_id" ) %>%
+  dplyr::mutate( gene_list_position = purrr::map2_int( uniprot_acc, uniprot_list, ~{ which(.x == .y)[1]})) %>%
+  relocate(gene_list_position, .after="uniprot_list" )   %>%
+  mutate(  first_gene_name = purrr::map2_chr(gene_list_position, `First gene name` ,  ~{ str_split(.y, ":") %>% purrr::map_chr(.x)} )) %>%
+  relocate(first_gene_name, .after="gene_list_position" )   %>%
+  mutate( `First gene name` = first_gene_name) %>%
+  dplyr::select( - uniprot_list, -gene_list_position) 
+
+
+output_data_annot <- output_data |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc))
+
+createDirectoryIfNotExists(file.path( results_dir, "formatted_output_file") )
+
+writexl::write_xlsx( output_data_annot, 
+                    file.path( results_dir, "phosphoproteomics", "formatted_output_file", "phospho_AdjForProtein_01.xlsx"))
+```
+
+
+
+```{r}
+cv_of_duplicates <- output_data %>%
+  dplyr::filter(`Repeated data` > 1 ) %>%
+  group_by(sites_id ) %>%
+  dplyr::summarise(across(  contains("norm_phos_logFC"),  list( cv = ~{ sd(.x)/mean(.x)} )  ) ) %>%
+  pivot_longer( cols=contains("cv"),
+                names_to = "timepoint",
+                values_to = "cv")
+
+
+cv_of_duplicates %>%
+  ggplot( aes( timepoint, cv)) +
+  geom_violin() +
+  ylim( -10, 10)
+
+output_data %>%
+  dplyr::inner_join( 
+cv_of_duplicates %>%
+  dplyr::filter( cv > 10 ), by =c('sites_id') ) %>%
+  dplyr::select( sites_id,  timepoint, contains("cv"), contains("norm_phos_logFC"))
+
+
+```
+
+
+```{r}
+# output_data
+
+copine6_results_dir <- "/home/ubuntu/Workings/2023/copine6_apex_victor_anggono_bmp_28c_20230214/Results"
+copine6_time_points <- readxl::read_xlsx(file.path(copine6_results_dir, "Compare_Time_Points", "annot_proteins", "de_proteins_long_annot.xlsx"))
+copine6_interactome <- readxl::read_xlsx(file.path(copine6_results_dir, "Threshold_1_2", "annot_proteins", "de_proteins_long_annot.xlsx"))
+# copine6_tbl <- vroom::vroom( file.path(copine6_results_dir, "Compare_Time_Points/annot_proteins_filt/custom_de_protein_query_set_time_point.tab"))
+
+glun2b_results_dir <- "/home/ubuntu/Workings/2023/glun2b_apex_victor_anggono_bmp_28d_20230214/Results"
+glun2b_time_points <- readxl::read_xlsx(file.path(glun2b_results_dir, "Compare_Time_Points", "annot_proteins", "de_proteins_long_annot.xlsx"))
+glun2b_interactome <- readxl::read_xlsx(file.path(glun2b_results_dir, "Threshold_1_2", "annot_proteins", "de_proteins_long_annot.xlsx"))
+# glun2b_tbl <- vroom::vroom(file.path(copine6_results_dir, "Compare_Time_Points/annot_proteins_filt/custom_de_protein_query_set_time_point.tab" ))
+
+
+```
+
+```{r}
+
+custom_pivot_wider  <- function( input_table, experiment) {
+  
+  input_table |>
+  mutate( is_sig = ifelse( q.mod < 0.05, 1, 0)) |>
+  dplyr::rename( q_mod = "q.mod") |>
+  mutate( experiment = experiment ) |>
+  pivot_wider( id_cols = "uniprot_acc_first"
+               , names_from = c(comparison, experiment )
+               , values_from = c(log2FC, is_sig, q_mod)
+               , names_sep = ".")
+}
+
+copine6_time_points_wider <- custom_pivot_wider(copine6_time_points, "copine6")
+copine6_interactome_wider <- custom_pivot_wider(copine6_interactome, "copine6")
+glun2b_time_points_wider <- custom_pivot_wider(glun2b_time_points, "glun2b")
+glun2b_interactome_wider <- custom_pivot_wider(glun2b_interactome, "glun2b")
+
+all_uniprot_acc_first <- bind_rows(
+copine6_time_points_wider |> distinct(uniprot_acc_first)
+,copine6_interactome_wider |> distinct(uniprot_acc_first)
+,glun2b_time_points_wider |> distinct(uniprot_acc_first)
+,glun2b_interactome_wider |> distinct(uniprot_acc_first) ) 
+
+interactome_results <- all_uniprot_acc_first |>
+  left_join( copine6_time_points_wider, by=join_by( uniprot_acc_first)) |>
+  left_join( copine6_interactome_wider, by=join_by( uniprot_acc_first)) |>
+  left_join( glun2b_time_points_wider, by=join_by( uniprot_acc_first)) |>
+  left_join( glun2b_interactome_wider, by=join_by( uniprot_acc_first))
+
+colnames( interactome_results)
+
+
+interactome_results
+
+
+writexl::write_xlsx( interactome_results, 
+                    file.path( results_dir, "phosphoproteomics", "formatted_output_file", "interactome_results_copine6_glun2b.xlsx"))
+
+colnames( output_data)
+```
+
+
+```{r}
+camk2a_phospho_with_interactome_copine6_glun2b <- output_data |>
+  left_join( interactome_results , by=join_by( uniprot_acc == uniprot_acc_first) ) 
+
+# colnames( camk2a_phospho_with_interactome_copine6_glun2b )
+
+
+writexl::write_xlsx( camk2a_phospho_with_interactome_copine6_glun2b |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc)), 
+                    file.path( results_dir, "phosphoproteomics"
+                               , "formatted_output_file"
+                               , "camk2a_phospho_with_interactome_copine6_glun2b.xlsx"))
+
+
+```
+
+## Control versus Inhibitor at each timepoint
+```{r}
+
+output_data_is_norm_phos_sig <- output_data |>
+ dplyr::filter(if_any( contains("log2FC") & contains("CT") & contains("KN")
+                        ,\(x) { x > 0} ))  |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") & contains("CT") & contains("KN")
+                        ,\(x) { x == 1} ))  
+
+output_data_is_norm_phos_sig |>
+  distinct(uniprot_acc) |>
+  arrange(uniprot_acc) |>
+  vroom::vroom_write( file.path( results_dir
+                                 , "phosphoproteomics/venn_diagram/control_vs_inhibitor_proteins_list.txt")
+                      , col_names=FALSE)
+
+# colnames( output_data_is_norm_phos_sig)
+
+dir.create( "results/phosphoproteomics/venn_diagram")
+
+writexl::write_xlsx( output_data_is_norm_phos_sig |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc))
+              , file.path( results_dir, "phosphoproteomics/venn_diagram/control_vs_inhibitor_upset_data.xlsx" ) )
+
+output_data_is_norm_phos_sig_plot <- output_data_is_norm_phos_sig |>
+  dplyr::select( sites_id, contains("is_norm_phos_sig") & contains("CT") & contains("KN")) |>
+  as.data.frame() |>
+  upset()
+
+output_data_is_norm_phos_sig_plot
+
+pdf( file=file.path(results_dir, "phosphoproteomics/venn_diagram/control_vs_inhibitor_upset.pdf"))
+print( output_data_is_norm_phos_sig_plot )
+dev.off()
+
+png( file=file.path(results_dir, "phosphoproteomics/venn_diagram/control_vs_inhibitor_upset.png"))
+print( output_data_is_norm_phos_sig_plot )
+dev.off()
+
+```
+
+
+## Time 5 min vs 0 min
+```{r}
+# colnames( output_data)
+
+temp_upset_data <- output_data |>
+ dplyr::filter(if_any(  contains("log2FC") &( contains("CT00_vs_KN00") | contains("CT05_vs_KN05") )
+                        ,\(x) { x > 0} ))   |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") &( contains("CT00_vs_KN00") | contains("CT05_vs_KN05") )
+                        ,\(x) { x == 1} ))  |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") & contains("CT05_vs_CT00") 
+                        ,\(x) { x == 1} ))  
+
+temp_upset_data |>
+  distinct(uniprot_acc) |>
+  arrange(uniprot_acc) |>
+  vroom::vroom_write( file.path( results_dir, "phosphoproteomics/venn_diagram/CT05-CT00_proteins_list.txt")
+                      , col_names=FALSE)
+
+temp_upset_plot <- temp_upset_data |>
+  dplyr::select( sites_id
+                 , contains("is_norm_phos_sig") & contains("CT00_vs_KN00")
+                 , contains("is_norm_phos_sig") & contains("CT05_vs_KN05")
+                 , contains("is_norm_phos_sig") & contains("CT05_vs_CT00")) |>
+  as.data.frame()  |>
+  upset()
+
+print( temp_upset_plot )
+
+
+writexl::write_xlsx( temp_upset_data |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc))
+              , file.path( results_dir, "phosphoproteomics/venn_diagram/CT05-CT00.xlsx" ) )
+
+
+pdf( file=file.path(results_dir, "phosphoproteomics/venn_diagram/CT05_vs_CT00.pdf"))
+print( temp_upset_plot )
+dev.off()
+
+png( file=file.path(results_dir, "phosphoproteomics/venn_diagram/CT05_vs_CT00.pdf"))
+print( temp_upset_plot )
+dev.off()
+
+
+```
+
+
+## Time 15 min vs 0 min
+```{r}
+# colnames( output_data)
+
+temp_upset_data <- output_data |>
+  dplyr::filter(if_any( contains("log2FC") & ( contains("CT00_vs_KN00") | contains("CT15_vs_KN15") ) 
+                        , \(x) { x > 0} ))  |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") &( contains("CT00_vs_KN00") | contains("CT15_vs_KN15") )
+                        ,\(x) { x == 1} ))  |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") & contains("CT15_vs_CT00") 
+                        ,\(x) { x == 1} ))  
+
+temp_upset_data |>
+  distinct(uniprot_acc) |>
+  arrange(uniprot_acc) |>
+  vroom::vroom_write( file.path( results_dir, "phosphoproteomics/venn_diagram/CT15-CT00_proteins_list.txt")
+                      , col_names=FALSE)
+
+temp_upset_plot <- temp_upset_data |>
+  dplyr::select( sites_id
+                 , contains("is_norm_phos_sig") & contains("CT00_vs_KN00")
+                 , contains("is_norm_phos_sig") & contains("CT15_vs_KN15")
+                 , contains("is_norm_phos_sig") & contains("CT15_vs_CT00")) |>
+  as.data.frame()  |>
+  upset()
+
+temp_upset_plot
+
+writexl::write_xlsx( temp_upset_data |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc))
+              , file.path( results_dir, "phosphoproteomics/venn_diagram/CT15-CT00.xlsx" ) )
+
+pdf( file=file.path(results_dir, "phosphoproteomics/venn_diagram/CT15_vs_CT00.pdf"))
+print( temp_upset_plot) 
+dev.off()
+
+png( file=file.path(results_dir, "phosphoproteomics/venn_diagram/CT15_vs_CT00.png"))
+print( temp_upset_plot) 
+dev.off()
+
+
+```
+
+## Time 30 min vs 0 min
+```{r}
+# colnames( output_data)
+
+temp_upset_data <- output_data |>
+  dplyr::filter(if_any( contains("log2FC") & ( contains("CT00_vs_KN00") | contains("CT30_vs_KN30") ) 
+                        , \(x) { x > 0} ))  |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") &( contains("CT00_vs_KN00") | contains("CT30_vs_KN30") )
+                        ,\(x) { x == 1} ))  |>
+ dplyr::filter(if_all( contains("is_norm_phos_sig") & contains("CT30_vs_CT00") 
+                        ,\(x) { x == 1} ))  
+
+temp_upset_data |>
+  distinct(uniprot_acc) |>
+  arrange(uniprot_acc) |>
+  vroom::vroom_write( file.path( results_dir, "phosphoproteomics/venn_diagram/CT30-CT00_proteins_list.txt")
+                      , col_names=FALSE)
+
+temp_upset_plot <- temp_upset_data |>
+  dplyr::select( sites_id
+                 , contains("is_norm_phos_sig") & contains("CT00_vs_KN00")
+                 , contains("is_norm_phos_sig") & contains("CT30_vs_KN30")
+                 , contains("is_norm_phos_sig") & contains("CT30_vs_CT00")) |>
+  as.data.frame()  |>
+  upset()
+
+print( temp_upset_plot) 
+
+
+writexl::write_xlsx( temp_upset_data |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc))
+              , file.path( results_dir, "phosphoproteomics/venn_diagram/CT30-CT00.xlsx" ) )
+
+
+pdf( file=file.path(results_dir, "phosphoproteomics/venn_diagram/CT30_vs_CT00.pdf"))
+print( temp_upset_plot) 
+dev.off()
+
+png( file=file.path(results_dir, "phosphoproteomics/venn_diagram/CT30_vs_CT00.png"))
+print( temp_upset_plot) 
+dev.off()
+
+
+```
+
+## CAMK2alpha phosphorylation sites on GluN2B interaction partners
+```{r}
+
+# colnames(camk2a_phospho_with_interactome_copine6_glun2b)
+
+temp_upset_data <- camk2a_phospho_with_interactome_copine6_glun2b  |>
+  dplyr::filter(if_any( contains("log2FC") &  contains("CT") & contains("KN") 
+                        , \(x) { x > 0} ) )  |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") & contains("CT") & contains("KN") 
+                        ,\(x) { x == 1} )) |>
+  dplyr::filter(if_any( contains("log2FC") &  matches("t\\d+min") & contains("glun2b") 
+                        , \(x) { x > 0} ) ) |>
+  dplyr::filter( if_any( matches("is_sig.t\\d+min.glun2b"), \(x) { x ==1 } ) &
+                   if_any( matches("is_sig.t\\d+vs\\d+min.glun2b"), \(x) { x ==1 } )  ) 
+
+temp_upset_data |>
+  distinct(uniprot_acc) |>
+  arrange(uniprot_acc) |>
+  vroom::vroom_write( file.path( results_dir
+                                             , "phosphoproteomics"
+                                             , "venn_diagram"
+                                             , "camk2a_phosphosites_glun2b_interactors_proteins_list.txt")
+                      , col_names=FALSE )
+
+temp_upset_plot <- temp_upset_data |> 
+   dplyr::select( sites_id
+                  , contains("is_norm_phos_sig") & contains("CT") & contains("KN")
+                  ) |>
+  as.data.frame() |>
+  upset()
+
+writexl::write_xlsx( temp_upset_data |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc))
+              , file.path( results_dir, "phosphoproteomics/venn_diagram"
+                           , "camk2a_phosphosites_glun2b_interactors.xlsx" ) )
+
+print( temp_upset_plot) 
+
+
+pdf( file=file.path(results_dir, "phosphoproteomics/venn_diagram/camk2a_phosphosites_glun2b_interactors.pdf"))
+print( temp_upset_plot) 
+dev.off()
+
+png( file=file.path(results_dir, "phosphoproteomics/venn_diagram/camk2a_phosphosites_glun2b_interactors.png"))
+print( temp_upset_plot) 
+dev.off()
+
+
+```
+## CAMK2alpha phosphorylation sites on Copine6 interaction partners
+```{r}
+
+temp_upset_table <- camk2a_phospho_with_interactome_copine6_glun2b  |>
+  dplyr::filter(if_any( contains("log2FC") &  contains("CT") & contains("KN")  
+                , \(x) { x > 0} ) ) |>
+ dplyr::filter(if_any( contains("is_norm_phos_sig") & contains("CT") & contains("KN") 
+                        ,\(x) { x == 1} )) |>
+  dplyr::filter(if_any( contains("log2FC") &  matches("t\\d+min") & contains("copine6") 
+                        , \(x) { x > 0} ) ) |>
+  dplyr::filter( if_any( matches("is_sig.t\\d+min.copine6"), \(x) { x ==1 } ) &
+                   if_any( matches("is_sig.t\\d+vs\\d+min.copine6"), \(x) { x ==1 } )  ) 
+
+temp_upset_table |>
+  distinct(uniprot_acc) |>
+  arrange(uniprot_acc) |>
+  vroom::vroom_write( file.path( results_dir
+                                             , "phosphoproteomics"
+                                             , "venn_diagram"
+                                             , "camk2a_phosphosites_copine6_interactors_proteins_list.txt")
+                      , col_names=FALSE )
+
+temp_upset_plot <- temp_upset_table |> 
+   dplyr::select( sites_id
+                  , contains("is_norm_phos_sig") & contains("CT") & contains("KN")
+                  ) |>
+  as.data.frame() |>
+  upset()
+
+print( temp_upset_plot )  
+
+writexl::write_xlsx( temp_upset_data |>
+  left_join(uniprot_tbl, by=join_by(uniprot_acc))
+              , file.path( results_dir, "phosphoproteomics/venn_diagram/camk2a_phosphosites_copine6_interactors.xlsx" ) )
+
+pdf( file=file.path(results_dir, "phosphoproteomics/venn_diagram/camk2a_phosphosites_copine6_interactors.pdf"))
+print( temp_upset_plot ) 
+dev.off()
+
+png( file=file.path(results_dir, "phosphoproteomics/venn_diagram/camk2a_phosphosites_copine6_interactors.png"))
+print( temp_upset_plot ) 
+dev.off()
+
+
+```
+
+
+

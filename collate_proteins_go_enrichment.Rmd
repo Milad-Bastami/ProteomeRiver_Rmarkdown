@@ -1,0 +1,136 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r}
+
+
+#Test if BioManager is installed 
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+
+# load pacman package manager
+if(!require(pacman)){
+    install.packages("pacman")
+    library(pacman)
+}
+
+p_load(tidyverse)
+p_load(plotly)
+p_load(vroom)
+p_load(ggplot2)
+p_load(gridExtra)
+p_load(magrittr)
+p_load(rlang)
+p_load(readxl)
+p_load(UniProt.ws)
+p_load(ggrepel)
+p_load(RColorBrewer)
+p_load(GGally)
+p_load(ProteomeRiver)
+
+
+p_load(httr)
+p_load(stringi)
+p_load(rvest)
+```
+
+
+
+```{r}
+#base_dir <-  here::here() 
+source('input_parameters.R')  # imported variables: species_taxon, base_dir
+data_dir <- file.path( base_dir, "data")
+results_dir <- file.path(base_dir, "results")
+source_dir <- file.path(base_dir, "scripts")
+```
+
+```{r}
+min_num_query_proteins_matching <- 3
+selected_min_set_size <- 5
+selected_max_set_size <- 250
+is_run_revigo <- TRUE
+input_go_type <- NA
+revigo_cutoff <- 0.7
+analysis_type_file_name <- "go_enrichment"
+input_plot_width <- 10
+input_plot_height <- 18
+
+cmp_expts_dir <- file.path(results_dir, "proteomics", "Protein_Enrichment_Comparisons", "GO")
+createDirIfNotExists(cmp_expts_dir)
+
+results_path_glob <- file.path(results_dir, "proteomics/de_proteins_go_list/*/go_enrichment_table_*.tab")
+
+```
+
+```{r}
+list_of_files <- Sys.glob( results_path_glob ) 
+table_of_files <- data.frame(file_name=list_of_files)
+added_columns <- setdiff(colnames(table_of_files), "file_name")
+
+```
+
+
+```{r}
+enriched_results_tbl <- readEnrichmentResultFiles( table_of_files, go_type=input_go_type) %>%
+    dplyr::mutate( comparison = str_replace_all(comparison, "minus", "vs" )) %>%
+    dplyr::filter( Count >= min_num_query_proteins_matching)
+```
+
+## Run Revigo
+```{r}
+enrich_revigo <- filterResultsWithRevigo(enriched_results_tbl,  added_columns, is_run_revigo=is_run_revigo) 
+```
+
+
+```{r}
+
+evaluateBestMinMaxGeneSetSize(enrich_revigo, added_columns)
+
+```
+
+
+```{r}
+
+
+saveFilteredFunctionalEnrichmentTable( enrich_revigo, 
+                                       set_size_min= selected_min_set_size, 
+                                       set_size_max=selected_max_set_size, 
+                                       results_dir=cmp_expts_dir, 
+                                       file_name=analysis_type_file_name  )
+```
+
+
+```{r eval=FALSE}
+enrich_revigo <- vroom::vroom( file.path(cmp_expts_dir, paste0( analysis_type_file_name, ".tab") ))
+
+```
+
+
+## Comparisons of samples 
+
+```{r}
+# enrich_revigo %>%
+#   distinct(comparison)
+
+list_of_heatmaps <- drawListOfFunctionalEnrichmentHeatmaps( enrich_revigo  %>%
+                                                              mutate( comparison = factor( comparison)), 
+                                                            added_columns,
+                                                            x_axis = Analysis_Type , 
+                                                            analysis_column = Analysis_Type,
+                                                            # facet_by_column = "gene_set",                                                            
+                                                            set_size_min= selected_min_set_size, 
+                                                            set_size_max=selected_max_set_size) 
+
+saveListOfFunctionalEnrichmentHeatmaps( list_of_heatmaps,
+                                        results_dir = cmp_expts_dir,
+                                        file_name = paste(analysis_type_file_name, sep="_"),
+                                        plot_width = input_plot_width,
+                                        plot_height = input_plot_height )
+
+```

@@ -1,0 +1,221 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+
+#Test if BioManager is installed 
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+   BiocManager::install(version = "3.12")
+}
+
+# load pacman package manager
+if(!require(pacman)){
+    install.packages("pacman")
+    library(pacman)
+}
+
+p_load(tidyverse)
+
+p_load(readxl)
+p_load(ProteomeRiver)
+```
+
+
+```{r}
+
+base_dir <- here::here()
+data_dir <- file.path( base_dir, "data" )
+results_dir <- file.path(base_dir, "results")
+plos_res_dir <- file.path(results_dir, "PLoS_Biology_2019", "Comparison")
+
+createDirIfNotExists(plos_res_dir)
+```
+
+Mark’s paper in PLoS Biology should provide a good reference - https://doi.org/10.1371/journal.pbio.3000170.
+
+(Note: Igy have a copy of the results table for comparisons).
+
+ 
+
+The other one is (Quantitative Proteomics Analysis of CaMKII Phosphorylation and the CaMKII Interactome in the Mouse Forebrain) https://pubs.acs.org/doi/10.1021/cn500337u.
+
+
+P11275 · KCC2A_RAT 
+ 
+
+Select CaMKIIα substrates that are phosphorylated upon LTP stimulation include:
+
+Q9QUH6 · SYGP1_RAT SynGAP (pS1108 and pS1138) - https://doi.org/10.1016/j.neuron.2014.12.023
+Q00959 · NMDE1_RAT GluN2A (pS1459) - https://doi.org/10.1016/j.celrep.2021.109338
+P97924 · KALRN_RAT Kalirin-7 (T95) - https://doi.org/10.1016/j.neuron.2007.10.005
+P19490 · GRIA1_RAT GluA1 (pS831) - https://doi.org/10.1038/35016089 (This could be mediated by PKC)
+
+
+
+## Fold-change and raw p-values from original PLoS 2019 publication
+```{r}
+prev_fold_change  <- read_xlsx(file.path(data_dir, "PLoS_Biology_2019", "76 mM KCl table - ip edited.xlsx") ) 
+```
+
+## Data from PLoS Biology 2019 paper
+```{r}
+prev_res <- prev_fold_change %>%
+  separate( ID, into=c("uniprot_acc", "gene_name", "position", "context"), sep="\\|") |>
+  mutate( row_id = row_number()) |>
+  separate_rows( position
+                 , context ) |>
+  separate_rows( uniprot_acc ) |>
+  group_by( row_id) |>
+  mutate( uniprot_acc_rank = row_number()) |>
+  relocate( row_id
+            , uniprot_acc_rank
+            , .before="uniprot_acc") |>
+  ungroup()
+
+prev_res
+```
+
+## Load results from ProteomeRiver CAMKIIalpha
+```{r}
+
+  phos_tbl <- vroom::vroom(file.path( results_dir
+                            , "phosphoproteomics"
+                            , "norm_phos_by_prot_abundance"
+                            , "norm_phosphosite_lfc_minus_protein_lfc_annotated.tsv") )
+
+```
+
+
+## Compare all sites that is statistically significant in both the current study and PLoS Biology 2019 paper
+```{r}
+compare_curr_to_prev <- phos_tbl |>
+  dplyr::select( comparison, uniprot_acc_first, norm_phos_logFC, combined_q_mod, position, residue, log2FC.phos, q.mod.phos, log2FC.prot, q.mod.prot, status) |>
+  inner_join( prev_res |>
+                dplyr::select( row_id, uniprot_acc_rank, uniprot_acc, position, FC_76mM_10s, SD_76mM_10s , `76mM_p_value` )
+              , by = c( "uniprot_acc_first" = "uniprot_acc"
+                        , "position" = "position") ) 
+
+
+compare_curr_to_prev_significant <- compare_curr_to_prev |>
+  dplyr::filter( comparison %in% c( "CT00_vs_KN00", "CT05_vs_KN05", "CT15_vs_KN15", "CT30_vs_KN30")) |>
+  dplyr::mutate( comparison = factor( comparison, levels=c( "CT00_vs_KN00", "CT05_vs_KN05", "CT15_vs_KN15", "CT30_vs_KN30"))) |>
+  dplyr::filter( combined_q_mod < 0.05 & `76mM_p_value` < 0.05) 
+
+dir.create( file.path(results_dir, "phosphoproteomics", "compare_with_literature") )
+
+
+correlation_plot <- compare_curr_to_prev_significant |>
+  ggplot(aes( norm_phos_logFC, FC_76mM_10s)) +
+  geom_point() +
+  facet_grid ( . ~ comparison ) +
+  xlab("CT vs CT, logFC") +
+  ylab("PLoS_Biology_2019 logFC")
+
+correlation_plot
+
+ggsave( plot=correlation_plot,
+        filename=file.path( results_dir
+                            , "phosphoproteomics"
+                            , "compare_with_literature"
+                            , "correlation_scatter_plot.png"))
+
+ggsave( plot=correlation_plot,
+        filename=file.path( results_dir
+                            , "phosphoproteomics"
+                            , "compare_with_literature"
+                            , "correlation_scatter_plot.pdf"))
+
+
+
+correlation_scores_list <- compare_curr_to_prev_significant |>
+  select( comparison, norm_phos_logFC, FC_76mM_10s) |>
+  group_by( comparison ) |>
+  summarise( counts= n()
+             , norm_phos_logFC = as.vector( list( norm_phos_logFC) )
+             , FC_76mM_10s = as.vector( list(FC_76mM_10s)) ) |>
+  ungroup()  |>
+  mutate( correlation = purrr::map2_dbl( norm_phos_logFC
+                , FC_76mM_10s
+                , \(x,y) { cor(x,y, use="pairwise.complete.obs" )} ))
+
+
+correlation_scores_table <- correlation_scores_list |>
+  select(-norm_phos_logFC
+         , -FC_76mM_10s )
+
+vroom::vroom_write ( correlation_scores_table
+                     , file.path(results_dir, "phosphoproteomics", "compare_with_literature", "correlation_scores_table.tab"))
+
+correlation_scores_table
+
+
+```
+
+
+```{r}
+phos_tbl |>
+  dplyr::filter( uniprot_acc_first %in% c("Q9QUH6"
+,"Q00959"
+,"P97924"
+,"P97924-5"
+,"P19490"
+))
+```
+
+
+```{r}
+# Q9QUH6 · SYGP1_RAT SynGAP (pS1108 and pS1138) - https://doi.org/10.1016/j.neuron.2014.12.023
+phos_tbl |>
+  dplyr::filter( uniprot_acc_first == "Q9QUH6"
+                 & position %in% c( 1108 , 1138))
+
+
+
+# Q00959 · NMDE1_RAT GluN2A (pS1459) - https://doi.org/10.1016/j.celrep.2021.109338
+
+phos_tbl |>
+  dplyr::filter( uniprot_acc_first == "Q00959"
+                 & position %in% c( 1459))
+
+# P97924 · KALRN_RAT Kalirin-7 (T95) - https://doi.org/10.1016/j.neuron.2007.10.005
+# Since this is the protein product of the transcript isoform seven, I need to use string matching to find matches to the UniProt accession. Isoforms are denoted by a dash and then the isoform number (e.g. P97924-7)
+phos_tbl |>
+  dplyr::filter( str_detect(uniprot_acc_first, "P97924")
+                 & position %in% c( 95))
+
+# P19490 · GRIA1_RAT GluA1 (pS831) - https://doi.org/10.1038/35016089 (This could be mediated by PKC)
+
+phos_tbl |>
+  dplyr::filter( uniprot_acc_first == "P19490"
+                 & position %in% c( 831))
+```
+
+
+
+# P11275 · KCC2A_RAT 
+# P11275 · KCC2A_RAT
+# P11798 · KCC2A_MOUSE
+
+Mouse Camk2a phosphosites are exactly the same as rat phosphosites as the protein primary sequence are exactly the same when aligned together using pairwise alignmentl. 
+275
+286
+305
+306
+```{r}
+
+phos_tbl |>
+  dplyr::filter( uniprot_acc_first == "P11275" )
+
+phos_tbl |>
+  dplyr::filter( uniprot_acc_first == "P11275" 
+                 & position %in% c( 275, 286, 305, 306) )
+
+
+
+```
+
+
