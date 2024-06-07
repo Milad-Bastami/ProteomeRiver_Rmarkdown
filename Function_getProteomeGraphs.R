@@ -638,12 +638,14 @@ getProteomeGraphs <- function(
       sites_id_short_list <- anno_tbl |> 
         pull(sites_id_short)
       rownames( r_obj@.Data[[1]] ) <- sites_id_short_list
+        # fix interactive plot htm file name issue (remove '=')
+       html_filename <- strsplit(colnames(r_obj$coefficients)[coef], split = '=', fixed = T)[[1]][1] |>
+        paste0('.html')
       htmlwidgets::saveWidget(widget = glimmaVolcano(r_obj, 
                                                      coef=coef, 
                                                      anno=anno_tbl, 
                                                      display.columns=display_columns), 
-                              file = file.path(output_dir, 
-                                               paste0(colnames(r_obj$coefficients)[coef], ".html")),  
+                              file = file.path(output_dir, html_filename),  
                               selfcontained = TRUE)
     }
   }
